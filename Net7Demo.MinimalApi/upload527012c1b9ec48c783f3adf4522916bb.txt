@@ -1,0 +1,119 @@
+-------------------------------
+proto
+
+syntax = "proto3";
+
+option csharp_namespace = "Net5Demos.Grpc.Server";
+
+package greet;
+
+// The greeting service definition.
+service Greeter {
+  // Sends a greeting
+  rpc SayHello (HelloRequest) returns (HelloReply);
+  rpc SayHellos(HelloRequest) returns (stream HelloReply);
+  rpc SayHelloMultipleTimes(stream HelloRequest) returns (HelloReply);
+}
+
+// The request message containing the user's name.
+message HelloRequest {
+  string name = 1;
+}
+
+// The response message containing the greetings.
+message HelloReply {
+  string message = 1;
+}
+
+---------------------------------------
+Server
+public override Task<HelloReply> SayHello(HelloRequest request, ServerCallContext context)
+        {
+            return Task.FromResult(new HelloReply
+            {
+                Message = "Hello " + request.Name
+            });
+        }
+
+        public override async Task SayHellos(HelloRequest request, IServerStreamWriter<HelloReply> responseStream, ServerCallContext context)
+        {
+            var i = 0;
+
+            while (!context.CancellationToken.IsCancellationRequested)
+            {
+                var message = $"Hi {request.Name}! {++i}";
+                _logger.LogInformation($"Sending message {message}");
+
+                await responseStream.WriteAsync(new HelloReply { Message = message });
+
+                await Task.Delay(1000);
+            }
+        }
+
+        public override async Task<HelloReply> SayHelloMultipleTimes(IAsyncStreamReader<HelloRequest> requestStream, ServerCallContext context)
+        {
+            List<string> names = new();
+            await foreach (var message in requestStream.ReadAllAsync())
+            {
+                names.Add(message.Name);
+            }
+
+            return new HelloReply { Message = $"Hi everybody! {string.Join(",", names)}" };
+        }
+
+--------------------------
+Client
+Packages
+Install-Package Grpc.Net.Client
+Install-Package Google.Protobuf
+Install-Package Grpc.Tools
+----------
+async Task CallGrpcServices()
+{
+    using var channel = GrpcChannel.ForAddress("https://localhost:5001");
+
+    var client = new Greeter.GreeterClient(channel);
+
+    await CallUnary(client);
+    await CallServerStreaming(client);
+    await CallClientStreaming(client);
+}
+
+async Task CallUnary(Greeter.GreeterClient client)
+{
+    var unaryResponse = await client.SayHelloAsync(new HelloRequest { Name = "Alberto" });
+    Console.WriteLine($"UNARY: {unaryResponse.Message}");
+}
+
+async Task CallServerStreaming(Greeter.GreeterClient client)
+{
+    var cts = new CancellationTokenSource();
+    cts.CancelAfter(TimeSpan.FromSeconds(3.5));
+
+    using var call = client.SayHellos(new HelloRequest { Name = "Alberto" }, cancellationToken: cts.Token);
+
+    try
+    {
+        await foreach (var message in call.ResponseStream.ReadAllAsync())
+        {
+            Console.WriteLine($"SERVER STREAMING: {message.Message}");
+        }
+    }
+    catch (RpcException ex) when (ex.StatusCode == StatusCode.Cancelled)
+    {
+        Console.WriteLine("SERVER STREAMING END!");
+    }
+}
+
+async Task CallClientStreaming(Greeter.GreeterClient client)
+{
+    using var call = client.SayHelloMultipleTimes();
+
+    await call.RequestStream.WriteAsync(new HelloRequest { Name = "Alberto" });
+    await call.RequestStream.WriteAsync(new HelloRequest { Name = "Andrea" });
+
+    await call.RequestStream.CompleteAsync();
+
+    var response = await call;
+    Console.WriteLine($"CLIENT STREAMING: {response.Message}");
+}
